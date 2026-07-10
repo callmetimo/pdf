@@ -857,23 +857,76 @@
         function renderPasswordIntro(body) {
             body.innerHTML = `
                 <div class="bg-darkSurface border border-darkBorder rounded-xl p-4 mb-4 text-xs text-neutral-400 leading-relaxed">
-                    This removes owner/permission restrictions (printing, copying, editing locks) from a PDF that does <span class="text-white font-medium">not</span> require a password to open.
-                    If your file needs a password just to open it, this can't decrypt it — that requires the original password and isn't possible with client-side tools.
+                    Choose a PDF. If it needs a password to open, you'll be asked for it right here — decryption happens entirely on your device, nothing is uploaded.
+                    <span class="block mt-2 text-amber-400">Note: the unlocked file is rebuilt from rendered pages, so text is no longer selectable or searchable — layout, images and formatting stay identical.</span>
                 </div>
                 <div id="password-dropzone-holder"></div>
             `;
             const holder = document.getElementById('password-dropzone-holder');
             holder.innerHTML = dropzoneHtml({ label: 'Tap to choose a PDF', hint: 'Max 50MB', accept: '.pdf' });
-            bindDropzone((files) => {
-                const file = files[0];
-                runTask('Removing restrictions…', async () => {
-                    const bytes = await file.arrayBuffer();
-                    const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
-                    const outBytes = await doc.save();
-                    triggerDownload(new Blob([outBytes], { type: 'application/pdf' }), `${baseNameOf(file.name)}_unlocked.pdf`);
-                    showToast('Restrictions removed where possible. Open the file to confirm it no longer prompts.', 'success');
-                });
+            bindDropzone((files) => handlePasswordFile(files[0]));
+        }
+
+        async function handlePasswordFile(file) {
+            const bytes = await file.arrayBuffer();
+            showOverlay('Checking file…');
+            try {
+                // Empty-password attempt: succeeds for files with no open-password
+                // (including permission-only restricted PDFs), fails for real user passwords.
+                const pdf = await pdfjsLib.getDocument({ data: bytes, password: '' }).promise;
+                showOverlay('Rebuilding unlocked PDF…');
+                await rebuildUnlockedFromPdfJs(file, pdf);
+                hideOverlay();
+                showToast('Unlocked PDF downloaded — no password needed anymore.', 'success');
+            } catch (err) {
+                hideOverlay();
+                promptForPassword(file, bytes);
+            }
+        }
+
+        function promptForPassword(file, bytes) {
+            const holder = document.getElementById('password-dropzone-holder');
+            holder.innerHTML = `
+                <div class="bg-darkSurface border border-darkBorder rounded-xl p-4">
+                    <p class="text-sm text-white mb-3 truncate">"${file.name}" needs a password to open.</p>
+                    <input id="pdf-password-input" type="password" placeholder="Enter password" class="w-full bg-darkCard border border-darkBorder rounded-lg px-3 py-2.5 text-white mb-1" onkeydown="if(event.key==='Enter') submitPdfPassword()">
+                    <p id="password-error" class="text-xs text-red-400 mb-2 hidden">Incorrect password — check spelling and try again.</p>
+                    <button onclick="submitPdfPassword()" class="w-full bg-electricBlue text-white font-semibold rounded-xl text-sm px-4 py-3 min-tap transition-all active:scale-95 mt-2">Unlock &amp; Download</button>
+                    <button onclick="renderPasswordIntro(document.getElementById('tool-body'))" class="w-full text-xs font-medium text-neutral-400 hover:text-white min-tap mt-2">Choose a different file</button>
+                </div>
+            `;
+            window.__passwordState = { file, bytes };
+        }
+
+        window.submitPdfPassword = function() {
+            const s = window.__passwordState;
+            const password = document.getElementById('pdf-password-input').value;
+            const errorEl = document.getElementById('password-error');
+            errorEl.classList.add('hidden');
+            runTask('Decrypting and rebuilding PDF…', async () => {
+                let pdf;
+                try {
+                    pdf = await pdfjsLib.getDocument({ data: s.bytes, password }).promise;
+                } catch (err) {
+                    errorEl.classList.remove('hidden');
+                    throw new Error('Incorrect password');
+                }
+                await rebuildUnlockedFromPdfJs(s.file, pdf);
+                showToast('Unlocked PDF downloaded — no password needed anymore.', 'success');
             });
+        };
+
+        async function rebuildUnlockedFromPdfJs(file, pdf) {
+            const outDoc = await PDFDocument.create();
+            for (let i = 1; i <= pdf.numPages; i++) {
+                const blob = await renderPdfPageToPngBlob(pdf, i);
+                const pngBytes = await blob.arrayBuffer();
+                const img = await outDoc.embedPng(pngBytes);
+                const page = outDoc.addPage([img.width, img.height]);
+                page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
+            }
+            const outBytes = await outDoc.save();
+            triggerDownload(new Blob([outBytes], { type: 'application/pdf' }), `${baseNameOf(file.name)}_unlocked.pdf`);
         }
     </script>
 </body>
