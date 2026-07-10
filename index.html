@@ -873,7 +873,9 @@
             try {
                 // Empty-password attempt: succeeds for files with no open-password
                 // (including permission-only restricted PDFs), fails for real user passwords.
-                const pdf = await pdfjsLib.getDocument({ data: bytes, password: '' }).promise;
+                // Always pass a fresh copy — pdf.js takes ownership of the buffer it's given
+                // and detaches the original, so reusing "bytes" later would silently fail.
+                const pdf = await pdfjsLib.getDocument({ data: bytes.slice(0), password: '' }).promise;
                 showOverlay('Rebuilding unlocked PDF…');
                 await rebuildUnlockedFromPdfJs(file, pdf);
                 hideOverlay();
@@ -906,7 +908,7 @@
             runTask('Decrypting and rebuilding PDF…', async () => {
                 let pdf;
                 try {
-                    pdf = await pdfjsLib.getDocument({ data: s.bytes, password }).promise;
+                    pdf = await pdfjsLib.getDocument({ data: s.bytes.slice(0), password }).promise;
                 } catch (err) {
                     errorEl.classList.remove('hidden');
                     throw new Error('Incorrect password');
